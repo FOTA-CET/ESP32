@@ -4,6 +4,9 @@
 #include <ESPmDNS.h>
 #include <Update.h>
 
+#include <mcp_can.h>
+#include <SPI.h>
+
 //Define host and wifi
 const char* host = "esp32";
 const char* ssid = "Xiaomi 13";
@@ -11,13 +14,48 @@ const char* password = "ahihihihi";
 
 WebServer server(80);
 
+//Can define
+#define CAN0_INT 4
+MCP_CAN CAN0(5);
+
 enum class CONNECT_CMD {
-  CONNECT = 65
+  CONNECT = 65,
+  DISCONNECT = 66
 };
+
+enum class STATUSCODE {
+  ERROR_OK = 65
+};
+
+void receiveSignal(unsigned long& rxId, unsigned char& len, int& signal) {
+  unsigned char rxBuf;
+  CAN0.readMsgBuf(&rxId, &len, &rxBuf);
+  signal = (int)rxBuf;
+  Serial.println(signal);
+}
+
+bool sendSignal(unsigned long rxId, unsigned char len, int signal) {
+  unsigned char data = (unsigned char)signal;
+  while (CAN0.sendMsgBuf(rxId, 0, len, &data));
+  return true;
+}
+
+bool configCan() {
+  while (CAN0.begin(MCP_ANY, CAN_500KBPS, MCP_8MHZ) != CAN_OK) {
+    Serial.println("Error Initializing MCP2515...");
+  }
+
+  CAN0.setMode(MCP_NORMAL);
+  pinMode(CAN0_INT, INPUT);
+  Serial.println("MCP2515 Initialized Successfully!");  
+  return true;
+}
 
 bool connectWifi(IPAddress& ip) {
   WiFi.begin(ssid, password);
+  Serial.printf("Connecting wifi");
   while (WiFi.status() != WL_CONNECTED);
+  Serial.println();
   ip = WiFi.localIP();
   return true;
 }
@@ -71,21 +109,29 @@ bool configServer(uint32_t& fileSize) {
 
 void setup() {
   Serial.begin(115200);
+  configCan();
 }
 
 void loop() {
   static uint32_t fileSize;
-  if (Serial.available() > 0) {
-    int c = Serial.read();
-    if (c == (int)CONNECT_CMD::CONNECT) {
-      IPAddress ip;
-      if (connectWifi(ip)) {
-        Serial.println(ip);
-      }
-      if(configServer(fileSize)) {
-        Serial.println("Successfully to config server");
-      } else {
-        Serial.println("Failed to config server");
+  long unsigned int rxId;
+  unsigned char len;
+  int signal;
+
+  if (!digitalRead(CAN0_INT)) {
+    receiveSignal(rxId, len, signal);
+    if (rxId == 0x123) {
+      if (signal == (int)CONNECT_CMD::CONNECT) {
+        IPAddress ip;
+        if (connectWifi(ip)) {
+          Serial.println(ip);
+          sendSignal(0x100, 1, (int)STATUSCODE::ERROR_OK);
+        }
+        if(configServer(fileSize)) {
+          Serial.println("Successfully to config server");
+        } else {
+          Serial.println("Failed to config server");
+        }
       }
     }
   }
